@@ -1,9 +1,19 @@
 from typing import List
-from fastapi import FastAPI, Query,Body
+from fastapi import FastAPI, Query, Body
+from fastapi.middleware.cors import CORSMiddleware
 from src.embedded_store import load_vector_db
 from src.retriever import build_topic_doc_graph, retrieve_chunks, retrieve_documents, query_both_levels
 
-app = FastAPI(title="RAG Research Papers API")
+app = FastAPI(title="RAG Blog Assistant API")
+
+# CORS middleware để cho phép frontend truy cập
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Trong production nên chỉ định domain cụ thể
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Load vector DB khi server start
 vectordb = load_vector_db()
@@ -85,3 +95,75 @@ def graph_api(
     """
     graph = build_topic_doc_graph(vectordb, topics, top_k=top_k)
     return graph
+
+
+@app.post("/chat")
+def chat_api(
+    question: str = Body(..., embed=True),
+    k: int = Body(3, embed=True)
+):
+    """
+    Chat endpoint cho blog assistant.
+    Trả về câu trả lời và các nguồn tham khảo.
+    
+    Args:
+        question: Câu hỏi của người dùng
+        k: Số lượng chunks để retrieve (default: 3)
+    
+    Returns:
+        {
+            "question": str,
+            "answer": str,
+            "sources": [{"title": str, "url": str, "excerpt": str}]
+        }
+    """
+    # Retrieve relevant chunks
+    docs = retrieve_chunks(vectordb, question, k=k)
+    
+    # Build context from retrieved chunks
+    context_parts = []
+    sources = []
+    
+    for i, doc in enumerate(docs, start=1):
+        # Add to context
+        context_parts.append(f"[Nguồn {i}]\n{doc.page_content}\n")
+        
+        # Build source info
+        metadata = doc.metadata
+        title = metadata.get('title', 'Untitled')
+        filename = metadata.get('filename', '')
+        
+        # Create URL (assuming blog structure)
+        # Ví dụ: java-socket-co-ban.md -> /blogs/java-socket-co-ban/
+        blog_slug = filename.replace('.md', '') if filename else ''
+        url = f"/blogs/{blog_slug}/" if blog_slug else "#"
+        
+        # Get excerpt (first 200 chars)
+        excerpt = doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
+        
+        sources.append({
+            "title": title,
+            "url": url,
+            "excerpt": excerpt,
+            "filename": filename
+        })
+    
+    # Combine context
+    full_context = "\n".join(context_parts)
+    
+    # Generate answer (simple concatenation for now)
+    # TODO: Integrate with LLM for better answers
+    answer = f"Dựa trên các bài viết trong blog, đây là những thông tin liên quan đến câu hỏi của bạn:\n\n{full_context}"
+    
+    return {
+        "question": question,
+        "answer": answer,
+        "sources": sources,
+        "total_sources": len(sources)
+    }
+
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint."""
+    return {"status": "healthy", "message": "RAG Blog Assistant API is running"}
